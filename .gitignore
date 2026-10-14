@@ -1,0 +1,33 @@
+# Бинарники
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+/*.sh
+
+# Тесты и покрытие
+*.test
+*.out
+coverage.txt
+coverage.html
+build.sh
+
+# Настройки утилиты (создаются в ~/.config/sim800ctl или %APPDATA%)
+settings.json
+
+# Логи
+*.log
+
+# Редакторы
+.idea/
+.vscode/
+*.swp
+*~
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# PDF
+*.pdf
