@@ -26,6 +26,17 @@ type Modem struct {
 	buf     []byte
 	verbose bool
 	log     func(string)
+
+	// rebootHints — сколько раз в логе встретились boot-сообщения
+	// (RDY, Call Ready, SMS Ready). Прямой индикатор перезагрузки
+	// модема. При нестабильном питании модем перезагружается при
+	// попытке TX (импульсный ток до 2 А) — эти сообщения
+	// появляются посреди уже установленной сессии.
+	//
+	// Доступ — под m.mu (logLine вызывается из waitFinal/drain,
+	// которые уже держат m.mu; RebootHints/ResetRebootHints
+	// берут m.mu сами).
+	rebootHints int
 }
 
 // New открывает порт и возвращает готовый Modem.
@@ -79,7 +90,30 @@ func (m *Modem) logLine(line string) {
 	if !hasPrintable(line) {
 		return
 	}
+	// Boot-сообщения SIM800: RDY — самое первое после подачи
+	// питания; Call Ready и SMS Ready — после инициализации SIM.
+	// Появление любой из них во время уже установленной сессии —
+	// признак перезагрузки.
+	if line == "RDY" || line == "Call Ready" || line == "SMS Ready" {
+		m.rebootHints++
+	}
 	m.debug("<< %s", sanitizeForLog(line))
+}
+
+// RebootHints возвращает счётчик boot-сообщений с момента
+// последнего ResetRebootHints.
+func (m *Modem) RebootHints() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rebootHints
+}
+
+// ResetRebootHints сбрасывает счётчик. Используется в диагностике
+// (test4, test8) перед началом наблюдения.
+func (m *Modem) ResetRebootHints() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rebootHints = 0
 }
 
 // sanitizeForLog заменяет непечатаемые байты на \xNN.

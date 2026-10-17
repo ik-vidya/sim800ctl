@@ -164,3 +164,34 @@ func TestLogLineFiltersGarbage(t *testing.T) {
 		t.Errorf("logged[1]=%q", logged[1])
 	}
 }
+
+func TestRebootHintsDetection(t *testing.T) {
+	var logged []string
+	m := &Modem{
+		verbose: true,
+		log:     func(s string) { logged = append(logged, s) },
+	}
+
+	m.ResetRebootHints()
+
+	m.logLine("OK")         // не boot
+	m.logLine("RDY")        // boot
+	m.logLine("+CSQ: 17,0") // не boot
+	m.logLine("Call Ready") // boot
+	m.logLine("SMS Ready")  // boot
+	m.logLine("RDY")        // boot
+
+	if got := m.RebootHints(); got != 4 {
+		t.Errorf("RebootHints=%d, ожидалось 4 (RDY, Call Ready, SMS Ready, RDY)",
+			got)
+	}
+
+	m.ResetRebootHints()
+	if got := m.RebootHints(); got != 0 {
+		t.Errorf("после ResetRebootHints=%d, ожидалось 0", got)
+	}
+
+	if len(logged) != 6 {
+		t.Errorf("len(logged)=%d, ожидалось 6: %v", len(logged), logged)
+	}
+}
