@@ -67,6 +67,48 @@ func (m *Modem) debug(format string, args ...any) {
 	}
 }
 
+// logLine печатает строку, полученную из порта, в debug-лог.
+//
+// Байты вне ASCII 0x20–0x7E (шум на линии, invalid UTF-8,
+// высокобитные байты) печатаются как \xNN — иначе терминал
+// рисует `�` и лог становится нечитаемым.
+//
+// Если после фильтрации в строке нет ни одного печатного
+// символа — она не печатается совсем (это чистый шум).
+func (m *Modem) logLine(line string) {
+	if !hasPrintable(line) {
+		return
+	}
+	m.debug("<< %s", sanitizeForLog(line))
+}
+
+// sanitizeForLog заменяет непечатаемые байты на \xNN.
+// Печатные ASCII-символы остаются как есть.
+func sanitizeForLog(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x20 && c < 0x7F {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "\\x%02x", c)
+		}
+	}
+	return b.String()
+}
+
+// hasPrintable сообщает, есть ли в строке хотя бы один
+// печатный ASCII-символ.
+func hasPrintable(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x20 && s[i] < 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
 // readAvailable читает доступные байты в буфер.
 //
 // Ошибку Read логируем через m.log (не debug): если USB-порт
@@ -223,7 +265,7 @@ func (m *Modem) drain() {
 		if line == "" {
 			break
 		}
-		m.debug("<< %s", line)
+		m.logLine(line)
 	}
 
 	if len(m.buf) == 0 {
@@ -242,10 +284,13 @@ func (m *Modem) drain() {
 		if line == "" {
 			break
 		}
-		m.debug("<< %s", line)
+		m.logLine(line)
 	}
 	if len(m.buf) > 0 {
-		m.debug("<< (incomplete) %q", string(m.buf))
+		if hasPrintable(string(m.buf)) {
+			m.debug("<< (incomplete) %s",
+				sanitizeForLog(string(m.buf)))
+		}
 		m.buf = nil
 	}
 }
@@ -264,7 +309,7 @@ func (m *Modem) waitFinal(echo string, timeout time.Duration) (string, error) {
 			if line == echo {
 				continue
 			}
-			m.debug("<< %s", line)
+			m.logLine(line)
 			if line == "OK" {
 				return strings.Join(response, "\n"), nil
 			}
@@ -293,7 +338,7 @@ func (m *Modem) waitPrompt(timeout time.Duration) error {
 			if line == "" {
 				break
 			}
-			m.debug("<< %s", line)
+			m.logLine(line)
 			if isError(line) {
 				return errors.New(line)
 			}

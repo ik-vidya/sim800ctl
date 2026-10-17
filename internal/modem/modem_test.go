@@ -96,3 +96,71 @@ func TestTestDescriptionTest5Has180(t *testing.T) {
 		t.Errorf("TestDescription(\"test5\") всё ещё содержит 60: %q", d)
 	}
 }
+
+// ==================== sanitizeForLog / hasPrintable ====================
+//
+// Шум на линии (high-bit байты, invalid UTF-8) раньше молча
+// терялся в drain (m.buf = nil без логирования). После фикса
+// readLine с \r такие байты стали видны в логе как `<< �`.
+// Теперь они печатаются как \xNN, а строки из чистого шума
+// пропускаются.
+
+func TestSanitizeForLog(t *testing.T) {
+	cases := map[string]string{
+		"OK":                  "OK",
+		"+CSQ: 17,0":          "+CSQ: 17,0",
+		"\x80OK":              "\\x80OK",
+		"\x00\x01\x02":        "\\x00\\x01\\x02",
+		"a\x80b":              "a\\x80b",
+		"+CMTI: \"SM\",5\x7f": "+CMTI: \"SM\",5\\x7f",
+		"":                    "",
+		"\xff\xfe":            "\\xff\\xfe",
+	}
+	for in, want := range cases {
+		if got := sanitizeForLog(in); got != want {
+			t.Errorf("sanitizeForLog(%q)=%q, ожидалось %q",
+				in, got, want)
+		}
+	}
+}
+
+func TestHasPrintable(t *testing.T) {
+	cases := map[string]bool{
+		"OK":         true,
+		"+CSQ: 17,0": true,
+		"\x80OK":     true, // есть OK
+		"\x80":       false,
+		"\x00\x01":   false,
+		"":           false,
+		" ":          true, // пробел — печатный (0x20)
+	}
+	for in, want := range cases {
+		if got := hasPrintable(in); got != want {
+			t.Errorf("hasPrintable(%q)=%v, ожидалось %v",
+				in, got, want)
+		}
+	}
+}
+
+func TestLogLineFiltersGarbage(t *testing.T) {
+	var logged []string
+	m := &Modem{
+		verbose: true,
+		log:     func(s string) { logged = append(logged, s) },
+	}
+
+	m.logLine("\x80")   // чистый шум — пропустить
+	m.logLine("OK")     // печатается как есть
+	m.logLine("\x80OK") // печатается с \x80
+	m.logLine("")       // пусто — пропустить
+
+	if len(logged) != 2 {
+		t.Fatalf("len(logged)=%d, ожидалось 2: %v", len(logged), logged)
+	}
+	if logged[0] != "<< OK" {
+		t.Errorf("logged[0]=%q", logged[0])
+	}
+	if logged[1] != "<< \\x80OK" {
+		t.Errorf("logged[1]=%q", logged[1])
+	}
+}
