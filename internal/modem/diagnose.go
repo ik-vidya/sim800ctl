@@ -194,7 +194,11 @@ func (m *Modem) Prepare(pin string) error {
 	if _, err := m.Command("AT+CFUN=1", 5*time.Second); err != nil {
 		return fmt.Errorf("AT+CFUN=1: %w", err)
 	}
-	_, _ = m.Command("AT+COPS=0,0", 10*time.Second)
+	// AT+COPS=0,0 — авто-выбор оператора. По SIM800L-NOTES.md
+	// раздел 10 эта команда «тяжела для RF» и может занимать до
+	// 30 секунд. Таймаут 10s давал ложные таймауты на исправном
+	// модеме при слабом сигнале.
+	_, _ = m.Command("AT+COPS=0,0", 30*time.Second)
 
 	// AT+CNMI=2,1,0,1,0 — критические URC:
 	//   mt=1 → +CMTI на входящие SMS

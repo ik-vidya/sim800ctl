@@ -68,10 +68,22 @@ func (m *Modem) debug(format string, args ...any) {
 }
 
 // readAvailable читает доступные байты в буфер.
+//
+// Ошибку Read логируем через m.log (не debug): если USB-порт
+// отвалился во время waitFinal, без этого сообщения программа
+// висит до таймаута без единой подсказки, что не так.
+//
+// При SetReadTimeout(100ms) go.bug.st/serial возвращает
+// (0, nil) при обычном «нет данных» — это не ошибка и не
+// логируется.
 func (m *Modem) readAvailable() {
 	buf := make([]byte, 4096)
 	n, err := m.port.Read(buf)
-	if err == nil && n > 0 {
+	if err != nil {
+		m.log(fmt.Sprintf("!! read error: %v", err))
+		return
+	}
+	if n > 0 {
 		m.buf = append(m.buf, buf[:n]...)
 	}
 }
@@ -159,10 +171,13 @@ func (m *Modem) Command(cmd string, timeout time.Duration) (string, error) {
 
 	m.drain()
 	m.debug(">> %s", cmd)
+	start := time.Now()
 	if _, err := m.port.Write([]byte(cmd + "\r")); err != nil {
 		return "", fmt.Errorf("запись в порт: %w", err)
 	}
-	return m.waitFinal(cmd, timeout)
+	resp, err := m.waitFinal(cmd, timeout)
+	m.debug("<< [%v]", time.Since(start).Round(time.Millisecond))
+	return resp, err
 }
 
 // SendPdu отправляет PDU через AT+CMGS.
@@ -183,10 +198,13 @@ func (m *Modem) SendPdu(hexPdu string, tpduLength int) (string, error) {
 		return "", err
 	}
 	m.debug(">> %s <Ctrl+Z>", hexPdu)
+	start := time.Now()
 	if _, err := m.port.Write([]byte(hexPdu + "\x1A")); err != nil {
 		return "", fmt.Errorf("запись PDU: %w", err)
 	}
-	return m.waitFinal("", finalWait)
+	resp, err := m.waitFinal("", finalWait)
+	m.debug("<< [%v]", time.Since(start).Round(time.Millisecond))
+	return resp, err
 }
 
 // drain читает и логирует все доступные строки, сбрасывает буфер.

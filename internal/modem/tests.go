@@ -395,8 +395,55 @@ func (m *Modem) testNetworkScan() TestResult {
 	if err != nil {
 		m.log("AT+COPS=? → ошибка: " + err.Error())
 		r.Findings = append(r.Findings, "COPS=?: ошибка "+err.Error())
-		r.Hint = "Сканирование не завершилось. RF не работает, антенна не " +
-			"подключена, или модем не в CFUN=1."
+
+		// Fallback: короткие команды дают полезную информацию
+		// даже когда сканирование не завершилось. Это не заменяет
+		// AT+COPS=?, но помогает понять, видит ли модем сеть
+		// вообще и в каком он состоянии.
+		m.log("Fallback: короткие команды (без сканирования)")
+		creg := strings.TrimSpace(m.tryCommand("AT+CREG?", 3*time.Second))
+		cops := strings.TrimSpace(m.tryCommand("AT+COPS?", 3*time.Second))
+		csq := strings.TrimSpace(m.tryCommand("AT+CSQ", 3*time.Second))
+
+		if creg != "" {
+			stat := parseSingleInt(creg, `\+CREG:\s*\d+\s*,\s*(\d+)`)
+			m.log(fmt.Sprintf("  AT+CREG? → %s   [%s]", creg, InterpretCREG(stat)))
+			r.Findings = append(r.Findings,
+				fmt.Sprintf("CREG (fallback): %s — %s", creg, InterpretCREG(stat)))
+			r.setParam("creg_fallback", strconv.Itoa(stat))
+		}
+		if cops != "" {
+			m.log("  AT+COPS? → " + cops)
+			r.Findings = append(r.Findings, "COPS? (fallback): "+cops)
+		}
+		if csq != "" {
+			rssi, ber := parseCSQBER(csq)
+			m.log(fmt.Sprintf("  AT+CSQ → %s   [%s]", csq, InterpretCSQ(rssi, ber)))
+			r.Findings = append(r.Findings,
+				fmt.Sprintf("CSQ (fallback): %s — %s", csq, InterpretCSQ(rssi, ber)))
+			r.setParam("csq_fallback", strconv.Itoa(rssi))
+		}
+
+		// Подсказка по конкретному состоянию.
+		cregStat := parseSingleInt(creg, `\+CREG:\s*\d+\s*,\s*(\d+)`)
+		switch {
+		case cregStat == 1 || cregStat == 5:
+			r.Hint = "Модем зарегистрирован, но AT+COPS=? не завершился. " +
+				"Это не обязательно сбой RF — сканирование может быть " +
+				"очень медленным. Отправка SMS должна работать."
+			r.Passed = true
+		case cregStat == 2:
+			r.Hint = "Модем в режиме поиска сети, сканирование не завершилось. " +
+				"Проверьте питание (test4), антенну. " +
+				"Попробуйте ручную регистрацию: " +
+				`sim800ctl exec 'AT+COPS=1,2,"24702"'`
+		case strings.Contains(csq, "0,0"):
+			r.Hint = "CSQ=0 и AT+COPS=? не завершился — RF не работает. " +
+				"Проверьте питание (test4) и антенну."
+		default:
+			r.Hint = "Сканирование не завершилось. Попробуйте увеличить " +
+				"таймаут (--cops-timeout) или проверьте антенну."
+		}
 		return r
 	}
 	resp = strings.TrimSpace(resp)
