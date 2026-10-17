@@ -634,6 +634,17 @@ func (m *Modem) testFullReset() TestResult {
 // ==================== ГРУППА 4. ПРОВЕРКА ====================
 
 // testRegistrationWatch — test8. Пассивно наблюдает за регистрацией 2 минуты.
+// testRegistrationWatch — test8. Пассивно наблюдает за регистрацией
+// 2 минуты. // test8: усиленная диагностика
+//
+// Считает:
+//   - значения CSQ, CREG, CGREG, COPS по итерациям;
+//   - таймауты каждой команды (не ответила за 3s) — симптом
+//     занятости, перезагрузки или блокировки AT;
+//   - +COPS: <mode> — особенно mode=1 (ручной без оператора):
+//     в этом режиме модем не регистрируется автоматически;
+//   - RebootHints — сколько раз за тест приходили RDY/Call Ready/
+//     SMS Ready (прямой индикатор перезагрузки).
 func (m *Modem) testRegistrationWatch() TestResult {
 	r := TestResult{Name: "test8 — ПРОВЕРКА: мониторинг регистрации"}
 
@@ -652,10 +663,19 @@ func (m *Modem) testRegistrationWatch() TestResult {
 	_, _ = m.Command("AT+CREG=2", 3*time.Second)
 	_, _ = m.Command("AT+CGREG=2", 3*time.Second)
 
+	m.ResetRebootHints()
+
 	deadline := time.Now().Add(120 * time.Second)
 	lastCSQ, lastCREG, lastCGREG := -1, -1, -1
+	lastCOPSMode := -1
 	csqZeroSeen := false
 	iter := 0
+
+	// Счётчики таймаутов по командам. Всего итераций — 20-24
+	// (5s пауза между), но точное число зависит от скорости
+	// ответов. Считаем по факту.
+	timeouts := map[string]int{}
+	commandsRun := map[string]int{}
 
 	for time.Now().Before(deadline) {
 		iter++
@@ -671,7 +691,12 @@ func (m *Modem) testRegistrationWatch() TestResult {
 					csqZeroSeen = true
 				}
 			}
+			commandsRun["CSQ"]++
+		} else {
+			timeouts["CSQ"]++
+			m.log("  CSQ:   [таймаут]")
 		}
+
 		if resp, err := m.Command("AT+CREG?", 3*time.Second); err == nil {
 			resp = strings.TrimSpace(resp)
 			stat := parseSingleInt(resp, `\+CREG:\s*\d+\s*,\s*(\d+)`)
@@ -679,7 +704,12 @@ func (m *Modem) testRegistrationWatch() TestResult {
 			if stat >= 0 {
 				lastCREG = stat
 			}
+			commandsRun["CREG"]++
+		} else {
+			timeouts["CREG"]++
+			m.log("  CREG:  [таймаут]")
 		}
+
 		if resp, err := m.Command("AT+CGREG?", 3*time.Second); err == nil {
 			resp = strings.TrimSpace(resp)
 			stat := parseSingleInt(resp, `\+CGREG:\s*\d+\s*,\s*(\d+)`)
@@ -687,14 +717,26 @@ func (m *Modem) testRegistrationWatch() TestResult {
 			if stat >= 0 {
 				lastCGREG = stat
 			}
+			commandsRun["CGREG"]++
+		} else {
+			timeouts["CGREG"]++
+			m.log("  CGREG: [таймаут]")
 		}
+
 		if resp, err := m.Command("AT+COPS?", 3*time.Second); err == nil {
 			resp = strings.TrimSpace(resp)
-			if q, ok := ParseCOPSQuery(resp); ok {
-				m.log(fmt.Sprintf("  COPS:  %s   [%s]", resp, q.String()))
+			// Извлекаем mode из +COPS: <mode>...
+			mode := parseSingleInt(resp, `\+COPS:\s*(\d+)`)
+			if mode >= 0 {
+				lastCOPSMode = mode
+				m.log(fmt.Sprintf("  COPS:  %s   [%s]", resp, interpretCOPSMode(mode)))
 			} else {
 				m.log("  COPS:  " + resp)
 			}
+			commandsRun["COPS"]++
+		} else {
+			timeouts["COPS"]++
+			m.log("  COPS:  [таймаут]")
 		}
 
 		if lastCREG == 1 || lastCREG == 5 {
@@ -705,11 +747,14 @@ func (m *Modem) testRegistrationWatch() TestResult {
 			r.setParam("csq_rssi_final", strconv.Itoa(lastCSQ))
 			r.setParam("creg_final", strconv.Itoa(lastCREG))
 			r.setParam("cgreq_final", strconv.Itoa(lastCGREG))
+			r.setParam("cops_mode_final", strconv.Itoa(lastCOPSMode))
+			r.setParam("reboots", strconv.Itoa(m.RebootHints()))
 			return r
 		}
 		time.Sleep(5 * time.Second)
 	}
 
+	// Итоговые значения.
 	r.Findings = append(r.Findings,
 		fmt.Sprintf("последние значения: CSQ=%d (%s), CREG=%d (%s), CGREG=%d (%s)",
 			lastCSQ, InterpretCSQ(lastCSQ, 0),
@@ -718,18 +763,90 @@ func (m *Modem) testRegistrationWatch() TestResult {
 	r.setParam("csq_rssi_final", strconv.Itoa(lastCSQ))
 	r.setParam("creg_final", strconv.Itoa(lastCREG))
 	r.setParam("cgreq_final", strconv.Itoa(lastCGREG))
+	r.setParam("cops_mode_final", strconv.Itoa(lastCOPSMode))
+	r.setParam("reboots", strconv.Itoa(m.RebootHints()))
 
-	if csqZeroSeen && lastCSQ == 0 {
+	// Суммируем таймауты.
+	totalTimeouts := 0
+	totalCommands := 0
+	for _, n := range timeouts {
+		totalTimeouts += n
+	}
+	for _, n := range commandsRun {
+		totalCommands += n
+	}
+	totalCommands += totalTimeouts
+
+	r.setParam("timeouts_total", strconv.Itoa(totalTimeouts))
+	r.setParam("commands_total", strconv.Itoa(totalCommands))
+	for cmd, n := range timeouts {
+		r.setParam("timeouts_"+strings.ToLower(cmd), strconv.Itoa(n))
+	}
+
+	reboots := m.RebootHints()
+
+	// Разбор находок по приоритету.
+	switch {
+	case lastCOPSMode == 1:
+		// Ручной режим без оператора — модем не регистрируется
+		// сам. Показаний CSQ/CREG при этом недостаточно: даже
+		// если питание в порядке, регистрации не будет.
+		r.Findings = append(r.Findings,
+			"ВНИМАНИЕ: +COPS: 1 — РУЧНОЙ режим выбора оператора, "+
+				"оператор не выбран. Модем не регистрируется сам.")
+		r.Hint = "Выполните AT+COPS=0 (сброс в авто-режим). " +
+			"После этого подождите 30 секунд и проверьте " +
+			"AT+CREG? и AT+CSQ. " +
+			"Если после этого CREG не станет 1/5 — проверяйте " +
+			"питание и антенну."
+
+	case reboots > 0:
+		r.Findings = append(r.Findings,
+			fmt.Sprintf("МОДЕМ ПЕРЕЗАГРУЖАЛСЯ %d раз(а) за время теста "+
+				"(RDY / Call Ready / SMS Ready в логе)", reboots))
+		r.Hint = "Импульсные просадки питания при TX не видны в AT+CBC, " +
+			"но вызывают перезагрузки. Припаяйте конденсатор " +
+			"1000-2200 мкФ на VBAT/GND модуля."
+
+	case totalTimeouts > totalCommands/2:
+		r.Findings = append(r.Findings,
+			fmt.Sprintf("МНОГО ТАЙМАУТОВ: %d из %d команд не ответили за 3s",
+				totalTimeouts, totalCommands))
+		r.Hint = "Модем часто не отвечает на AT. Возможные причины: " +
+			"перезагрузки (питание), блокировка AT во время поиска сети, " +
+			"плохой контакт UART. Проверьте питание и кабель."
+
+	case csqZeroSeen && lastCSQ == 0:
 		r.Findings = append(r.Findings, "CSQ всё время 0 — RF-тракт не работает")
 		r.Hint = "Модем не видит сеть. Запустите test6 (мягкий RF-сброс). " +
 			"Если не поможет — test7 (полный сброс), " +
 			"затем отключение питания на 5 минут."
-	} else if lastCREG == 2 {
+
+	case lastCREG == 2:
 		r.Findings = append(r.Findings, "модем находится в режиме поиска сети")
 		r.Hint = "Сигнал есть, но регистрация не завершается. " +
 			"Проверьте баланс SIM, состояние антенны, или запустите test5."
 	}
 	return r
+}
+
+// interpretCOPSMode расшифровывает mode из +COPS: <mode>.
+func interpretCOPSMode(mode int) string {
+	switch mode {
+	case 0:
+		return "авто"
+	case 1:
+		return "ручной (оператор не выбран)"
+	case 2:
+		return "дерегистрация"
+	case 3:
+		return "только формат"
+	case 4:
+		return "ручной с авто-фолбэком"
+	case 5:
+		return "ручной с авто-фолбэком (формат 2)"
+	}
+	return "неизвестный режим"
 }
 
 // ==================== вспомогательные парсеры ====================
