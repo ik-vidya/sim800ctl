@@ -1,0 +1,8 @@
+; gammu-detect сгенерировал конфигурационный файл.
+; Подробнее можно узнать в Руководстве Пользователя Gammu.
+
+[gammu]
+device = /dev/ttyUSB0
+name = Телефон подключен к USB порту 1a86 USB2.0-Serial
+connection = at
+

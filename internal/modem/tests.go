@@ -60,7 +60,7 @@ func TestDescription(name string) string {
 	case "test4":
 		return "ИЗМЕРЕНИЕ: стабильность питания (CBC в покое и при поиске сети)"
 	case "test5":
-		return "ИЗМЕРЕНИЕ: сканирование сетей (AT+COPS=?, до 60 с)"
+		return "ИЗМЕРЕНИЕ: сканирование сетей (AT+COPS=?, до 180 с)"
 	case "test6":
 		return "ВОССТАНОВЛЕНИЕ: мягкий сброс RF (AT+CFUN=1,1)"
 	case "test7":
@@ -381,7 +381,7 @@ func (m *Modem) testNetworkScan() TestResult {
 
 	m.log("=== test5: сканирование сетей (AT+COPS=?) ===")
 	m.log("Цель: узнать, каких операторов видит модем и кто из них текущий.")
-	m.log("Длительность: до 60 секунд активного сканирования.")
+	m.log("Длительность: до 180 секунд активного сканирования.")
 	m.log("")
 
 	if err := m.Sync(); err != nil {
@@ -391,7 +391,7 @@ func (m *Modem) testNetworkScan() TestResult {
 	_, _ = m.Command("ATE0", 2*time.Second)
 
 	m.log("Сканирую доступные диапазоны...")
-	resp, err := m.Command("AT+COPS=?", 60*time.Second)
+	resp, err := m.Command("AT+COPS=?", 180*time.Second)
 	if err != nil {
 		m.log("AT+COPS=? → ошибка: " + err.Error())
 		r.Findings = append(r.Findings, "COPS=?: ошибка "+err.Error())

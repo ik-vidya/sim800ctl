@@ -77,12 +77,24 @@ func (m *Modem) readAvailable() {
 }
 
 // readLine возвращает следующую непустую строку из буфера.
+//
+// Терминатором считается и \r, и \n: SIM800 (и другие модемы)
+// при переполнении приёмного буфера или при сбое SIM иногда
+// присылают строки без \n (только \r). Без этого readLine
+// возвращал бы "" до прихода следующей команды, а drain терял
+// бы обрезанную строку (симптом: "<< +CME ER" в логе вместо
+// "+CME ERROR: SIM busy").
+//
+// При \r\n считаем это одним терминатором: \n после \r
+// пропускается, пустая строка не появляется.
 func (m *Modem) readLine() string {
 	for {
 		idx := -1
+		var term byte
 		for i, b := range m.buf {
-			if b == '\n' {
+			if b == '\r' || b == '\n' {
 				idx = i
+				term = b
 				break
 			}
 		}
@@ -90,11 +102,29 @@ func (m *Modem) readLine() string {
 			return ""
 		}
 		line := strings.TrimSpace(string(m.buf[:idx]))
-		m.buf = m.buf[idx+1:]
+		next := idx + 1
+		if next < len(m.buf) {
+			// \r\n или \n\r — считаем одним терминатором.
+			if (term == '\r' && m.buf[next] == '\n') ||
+				(term == '\n' && m.buf[next] == '\r') {
+				next++
+			}
+		}
+		m.buf = m.buf[next:]
 		if line != "" {
 			return line
 		}
 	}
+}
+
+// hasTerminator сообщает, есть ли в буфере \r или \n.
+func hasTerminator(b []byte) bool {
+	for _, c := range b {
+		if c == '\r' || c == '\n' {
+			return true
+		}
+	}
+	return false
 }
 
 // isError — строка является ошибкой?
@@ -162,6 +192,12 @@ func (m *Modem) SendPdu(hexPdu string, tpduLength int) (string, error) {
 // drain читает и логирует все доступные строки, сбрасывает буфер.
 // Вызывается перед отправкой команды, чтобы не получить остатки
 // прошлых ответов.
+//
+// Если в буфере осталась неполная строка (нет \r и \n) —
+// дочитываем до 200 мс: модем мог ещё не дописать её.
+// Если и через 200 мс терминатор не появился — выводим остаток
+// как "(incomplete)" и сбрасываем, чтобы обрезанная строка не
+// склеилась с ответом следующей команды.
 func (m *Modem) drain() {
 	m.readAvailable()
 	for {
@@ -171,8 +207,27 @@ func (m *Modem) drain() {
 		}
 		m.debug("<< %s", line)
 	}
+
+	if len(m.buf) == 0 {
+		return
+	}
+
+	// В буфере неполная строка — дочитываем.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for !hasTerminator(m.buf) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		m.readAvailable()
+	}
+
+	for {
+		line := m.readLine()
+		if line == "" {
+			break
+		}
+		m.debug("<< %s", line)
+	}
 	if len(m.buf) > 0 {
-		m.debug("<< %s", strings.TrimSpace(string(m.buf)))
+		m.debug("<< (incomplete) %q", string(m.buf))
 		m.buf = nil
 	}
 }
